@@ -1,0 +1,1446 @@
+---
+title: "The Success Equation: Predicting Start-up Success with Advanced Predictive Analytics "
+author: "The Egyptian Russian unviversity - Faculty of Mangement, Economics, and Business technology"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r echo=FALSE}
+data.frame(
+  Name = c("Abdelrahman Mahmoud", "Ganna Asaad", "Mohamed Atef", "Toka Alsayed"),
+  ID = c(214117, 204115, 214067, 214091)
+)
+```
+
+# Introduction
+
+The startup ecosystem is dynamic and challenging, where success hinges on various factors. Predictive analytics, particularly classification models, are essential tools for investors, entrepreneurs, and policymakers to assess startup potential. By leveraging historical data, these models classify startups into categories like 'successful' or 'failed' and provide insights into key success factors such as funding, market trends, and team dynamics. This project applies various classification techniques to a rich dataset of startups, aiming to identify the most accurate predictors of success. We will use algorithms like logistic regression, decision trees, and support vector machines, evaluating their performance with metrics such as accuracy, precision, recall, and F1-score, to uncover actionable insights for informed decision-making in the startup ecosystem.
+
+# Objectives
+
+1.	 To evaluate the performance of different classification models in predicting the success of startup companies based on historical data.
+2.	To identify key factors that significantly influence the likelihood of a startup's success or failure.
+3.	To provide actionable insights for stakeholders in the startup ecosystem to make informed decisions regarding investments and strategy.
+
+
+# Reading and exploring the dataset stucture
+
+## **Import libraries**
+```{r ,message=FALSE, warning=FALSE, results='hide'}
+library(flexdashboard)
+library(plotly)
+library(tidyverse)
+library(skimr)
+library(naniar)
+library(mice)
+library(corrplot)
+library(GGally)
+library(ggfortify)
+library(MASS)
+library(glmnet)
+library(dplyr)
+library(ggplot2)
+```
+
+## **Reading the data set**
+```{r}
+startup.data <- read.csv("D:/ERU/Level 3/S2/Pridective/Proj/Class/archive/startup data.csv")
+base_data<-startup.data
+```
+
+## **Data set structure**
+```{r}
+str(base_data)
+
+```
+
+## **Data set cardinality**
+
+```{r}
+sapply(base_data, function(x) length(unique(x)))
+```
+
+```{r}
+df <- base_data
+```
+
+
+
+# **Data Pre-processing**
+
+## 1) Dropping unnecessory variables 
+
+```{r}
+df <- base_data |> dplyr::select(-c('Unnamed..0', 'Unnamed..6', 'id', 'object_id','zip_code','state_code.1'))
+
+```
+
+## 2) Renaming variables
+```{r}
+names(df)
+```
+
+```{r}
+df <- df |> rename(
+    age_at_ff = age_first_funding_year,
+    age_at_lf = age_last_funding_year,
+    age_at_fm = age_first_milestone_year,
+    age_at_lm = age_last_milestone_year, 
+    partners = relationships,
+    n_funding_rounds = funding_rounds
+)
+
+```
+
+## 3) Changing Data types
+
+```{r}
+df$founded_at <- as.Date(df$founded_at, format="%m/%d/%Y")
+df$closed_at <- as.Date(df$closed_at, format="%m/%d/%Y")
+df$first_funding_at <- as.Date(df$first_funding_at, format="%m/%d/%Y")
+df$last_funding_at <- as.Date(df$last_funding_at, format="%m/%d/%Y")
+```
+
+
+```{r}
+# Convert variables from double to logical (binary)
+df$has_roundA <- as.integer(df$has_roundA)
+df$has_roundB <- as.integer(df$has_roundB)
+df$has_roundC <- as.integer(df$has_roundC)
+df$has_roundD <- as.integer(df$has_roundD)
+```
+
+## 4) Variables computation
+
+
+- Combine binary variables into one categorical variable
+
+```{r}
+df$has_roundA <- as.logical(df$has_roundA)
+df$has_roundB <- as.logical(df$has_roundB)
+df$has_roundC <- as.logical(df$has_roundC)
+df$has_roundD <- as.logical(df$has_roundD)
+
+df <- df %>%
+  mutate(fundingRounds = case_when(
+    has_roundA & has_roundB & has_roundC & has_roundD ~ "Round A, B, C, and D",
+    has_roundA & has_roundB & has_roundC ~ "Round A, B, and C",
+    has_roundA & has_roundB & has_roundD ~ "Round A, B, and D",
+    has_roundA & has_roundC & has_roundD ~ "Round A, C, and D",
+    has_roundB & has_roundC & has_roundD ~ "Round B, C, and D",
+    has_roundA & has_roundB ~ "Round A and B",
+    has_roundA & has_roundC ~ "Round A and C",
+    has_roundA & has_roundD ~ "Round A and D",
+    has_roundB & has_roundC ~ "Round B and C",
+    has_roundB & has_roundD ~ "Round B and D",
+    has_roundC & has_roundD ~ "Round C and D",
+    has_roundA ~ "Round A",
+    has_roundB ~ "Round B",
+    has_roundC ~ "Round C",
+    has_roundD ~ "Round D",
+    TRUE ~ "No rounds"
+  ))
+```
+
+- Reducing the large values of the variable funding_total_usd by transforming to its log
+
+```{r}
+df <- df|> mutate(funding_total_usd = log(funding_total_usd))
+```
+
+## 5) Explore and Handle Missing Data
+
+summarization of the data 
+
+```{r}
+skim(df)
+```
+
+Explore missing data
+
+```{r}
+options(repr.plot.width=50, repr.plot.height=30) # Adjust plot size
+par(cex.main=9, cex.axis=9, cex.lab=9) # Maximize font size
+miss_chart<-md.pattern(df, rotate.names = TRUE)
+```
+
+- replace NA with zero (meaning that the company has no milestones)
+
+```{r}
+df <- df |>
+  mutate(age_at_fm = replace_na(age_at_fm, 0),
+        age_at_lm = replace_na(age_at_lm, 0))
+```
+
+
+## 6) Handle Negative Values of age variables:
+
+- Explore the negatives in the variables: age_at_fm and age_at_lm
+
+```{r}
+
+negative_counts <- df |>
+  summarize(
+    age_at_fm = sum(age_at_fm < 0, na.rm = TRUE),
+    age_at_lm = sum(age_at_lm < 0, na.rm = TRUE)
+  )
+
+# Calculate the total number of rows
+total_rows <- nrow(df)
+
+# Calculate the percentage of records with negative values
+negative_percentage <- negative_counts |>
+  mutate(
+    age_at_fm = (age_at_fm / total_rows) * 100,
+    age_at_lm = (age_at_lm / total_rows) * 100
+  )
+
+# Print the results
+negative_counts
+negative_percentage
+```
+- Replacing the negatives with 0 
+
+```{r}
+df <-df |>
+  filter(age_at_fm >= 0, age_at_lm >= 0)
+```
+
+- Explore the negatives in the variables: age_at_ff and age_at_lf
+
+negative values in age first funding indicate that the fund that have been taken is before opening the company so the age of the company was zero
+```{r}
+negative_counts <- df |>
+  summarize(
+    age_at_ff = sum(age_at_ff < 0, na.rm = TRUE),
+    age_at_lf = sum(age_at_lf < 0, na.rm = TRUE)
+  )
+
+# Calculate the total number of rows
+total_rows <- nrow(df)
+
+# Calculate the percentage of records with negative values
+negative_percentage <- negative_counts |>
+  mutate(
+    age_at_ff = (age_at_ff / total_rows) * 100,
+    age_at_lf = (age_at_lf / total_rows) * 100
+  )
+
+# Print the results
+negative_counts
+negative_percentage
+```
+- Replacing the negatives with 0 
+
+```{r}
+# Impute negative values in age_at_ff with zeros
+df <- df |>
+  mutate(age_at_ff = ifelse(age_at_ff < 0, 0, age_at_ff))
+```
+
+```{r}
+# Impute negative values in age_at_lf with zeros
+df<-df |>
+  filter(age_at_lf>=0)
+```
+
+## 7) Ensure variables validaty
+
+- Inconsistent data: unborn startups
+```{r}
+df$founded_at <- as.Date(df$founded_at, format="%m/%d/%Y")
+df$closed_at <- as.Date(df$closed_at, format="%m/%d/%Y")
+df$first_funding_at <- as.Date(df$first_funding_at, format="%m/%d/%Y")
+df$last_funding_at <- as.Date(df$last_funding_at, format="%m/%d/%Y")
+
+negative_diff_data <- df %>%
+  dplyr::filter(difftime(closed_at, founded_at, units = "days") < 0)
+
+# Verify by displaying the first few rows of the filtered dataframe
+head(negative_diff_data)
+
+
+```
+- Remove inconsistent rows 
+
+```{r}
+df <- df |> dplyr::filter(!name %in% c("adBrite", "Yub"))
+```
+
+
+
+# **Model Pre-processing**
+
+## 1- Adding new Variables 
+
+1) diff_fm & diff_lm 
+mutating  the difference between age_at_fm and age_at_ff and age_at_lm-age_at_lf for each startup and store this difference in a new variable called age_difference. 
+```{r}
+df <- df |> 
+  mutate(
+    diff_fm = age_at_fm - age_at_ff, 
+    diff_lm = age_at_lm - age_at_lf
+)
+# These variables will help in analyzing the time lag between the first funding and the first milestone, which can be crucial for understanding start-up performance and growth patterns.
+```
+
+2)has_multiple_rounds: 
+this variable indicate that the start-up participates in multiple rounds or not 
+```{r}
+df <- df |>
+  mutate(
+    has_multiple_rounds = if_else(n_funding_rounds>1,1,0)
+)
+```
+
+## 2- Factorizing the Categorical variables
+
+```{r}
+df$status <- factor(df$status)
+df$state_code<-factor(df$state_code)
+df$category_code<-factor(df$category_code)
+
+```
+
+
+## 3- Change the date variables into years
+
+1- Ensure the stationary of date variables
+```{r, warning=FALSE}
+library(tseries)
+# Identify numerical variables
+numerical_vars <- sapply(df, is.numeric)
+numerical_vars <- names(df)[numerical_vars]
+
+# Initialize a list to store test results
+ad_test_results <- list()
+
+# Apply the Anderson-Darling test to each numerical variable
+for (var in numerical_vars) {
+  ad_test_results[[var]] <- adf.test(df[[var]])
+}
+
+# Print the results
+for (var in names(ad_test_results)) {
+  cat("\nAnderson-Darling test for variable:", var, "\n")
+  print(ad_test_results[[var]])
+}
+```
+
+2- Dates to years
+```{r}
+# Load necessary library
+library(lubridate)
+
+
+# Convert dates to years
+df <- df %>%
+  mutate(
+    founded_at = year(founded_at),
+    first_funding_at = year(first_funding_at),
+    last_funding_at = year(last_funding_at)
+  )
+
+# Display the updated data frame
+str(df)
+
+```
+
+3- Encoding the years
+
+```{r}
+# Function to encode years
+encode_years <- function(column) {
+  unique_years <- sort(unique(column))
+  year_map <- setNames(seq_along(unique_years), unique_years)
+  return(year_map[as.character(column)])
+}
+
+# Apply label encoding to the specified columns
+df$founded_at <- encode_years(df$founded_at)
+df$first_funding_at <- encode_years(df$first_funding_at)
+df$last_funding_at <- encode_years(df$last_funding_at)
+
+```
+
+## 4- Encoding categorical variables
+
+```{r}
+library(fastDummies)
+
+
+# One-hot encoding using fast Dummies
+df_encoded <- dummy_cols(df, select_columns = c("state_code", "category_code"), remove_first_dummy = FALSE)
+
+# Remove the original columns if not needed
+df_encoded <- df_encoded[ , !(names(df_encoded) %in% c("state_code", "category_code"))]
+
+# Print the encoded data frame
+str(df_encoded)
+
+```
+
+## 5- Imbalance checking
+
+```{r}
+st_counts<- table(df$status)
+status_percentages <- round(prop.table(st_counts) * 100)
+status_percentages
+```
+Since, the value "Closed" represents 50% of the value "acquired". Therefore, the Data target is balanced.
+
+# **EDA (Exploratory Data Analysis)**
+
+```{r}
+skim(df)
+```
+
+1- Visualize the numerical variables distributions using histogram
+
+```{r}
+library(MASS)
+library(tidyverse)
+
+
+df |> 
+  pivot_longer(cols = c("age_at_ff", "age_at_lf", "age_at_fm" ,"age_at_lm" , "avg_participants",
+                        "milestones", "n_funding_rounds", "partners", "diff_fm","diff_lm"),
+               names_to = "variable",
+               values_to = "value") |>
+  ggplot(aes(x = value)) +
+  geom_histogram(bins = 25, color = "black", fill = "lightblue") +
+  facet_wrap(~variable, scales = "free", ncol = 4) +
+  labs(title = "Histograms of Numeric Variables in df Dataset",
+       x = "Value",
+       y = "Frequency") + 
+  theme_minimal()
+```
+```{r}
+df  |> ggplot(aes(x= df$funding_total_usd) )+ geom_histogram(bins = 30, color = "black", fill = "lightblue") + scale_x_log10()
+  
+  
+```
+
+It appears that All the numerical variables distributions are skewed right expect for the total fund variable.
+
+2- Explore Categorical variables using bar charts
+
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+# Identifying categorical variables
+categorical_vars <- df |> dplyr::select(c("state_code",  "category_code","has_multiple_rounds", "status","has_VC","has_angel","is_top500"))
+
+# Plotting bar charts for each categorical variable
+for (cat_var in names(categorical_vars)) {
+  plot <- ggplot(df, aes_string(x = cat_var)) +
+    geom_bar(fill = "lightblue", color = "black") +
+    labs(title = paste("Distribution of", cat_var),
+         x = cat_var,
+         y = "Count") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+   
+   print(plot)
+}
+
+```
+1)distribution of state_code 
+CA (California): This state has the highest count by a significant margin, indicating that a large number of startups are based in California.
+Many other states have relatively lower counts, indicating fewer startups in those regions.
+
+2) Distribution of category_code :
+software: This category has the highest count, indicating that many startups fall under this category.
+web: Another prominent category with a high count.
+Categories like automotive, hospitality, and semiconductor have relatively lower counts.
+
+3)distribution of multiple rounds
+ the startups in the dataset have gone through multiple rounds of funding, indicating ongoing investment and possibly growth.
+ 
+4)status 
+he acquired status has a higher count, indicating successful exits for many startups.
+The closed status has a lower count, indicating that fewer startups have shut down.
+
+
+3- Correlation Matrix
+
+```{r}
+library(ggcorrplot)
+
+# Selecting the variables of interest
+variables_of_interest <- c("age_at_ff", "age_at_lf", "age_at_fm" ,"age_at_lm", "avg_participants",
+                            "milestones", "n_funding_rounds", "partners", "funding_total_usd", "diff_fm","diff_lm","labels")
+
+# Subsetting the dataframe with the selected variables
+subset_df <- df[, variables_of_interest]
+
+# Compute the correlation matrix
+cor_matrix <- cor(subset_df, use = "complete.obs")
+
+# Plot heat map
+gg <- ggcorrplot(cor_matrix, method = "square", type = "lower", 
+                 lab = TRUE, lab_size = 3, 
+                 title = "Correlation Matrix of Selected Variables",
+                 colors = c("#6E6E6E", "white", "lightblue"))  # Adjust colors as needed
+
+# Customize plot appearance
+gg <- gg + theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  coord_fixed(ratio = 0.5) + # Adjust the aspect ratio
+  theme(legend.position = "bottom") + # Move legend to bottom
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + # Remove gridlines
+  theme(axis.title.x = element_blank(), axis.title.y = element_blank()) + # Remove axis titles
+  theme(legend.key.size = unit(0.5, "cm")) # Adjust legend key size
+
+# Display the plot
+print(gg)
+
+```
+it seems that there a strong relationship between age_at_fm and age_at_lm with 0.84 correlation which might indicate a multicolinearity 
+also between age_at_lf and age_at_ff with 0.76 correlation
+
+4- Box Plot to study outliers
+
+```{r}
+library(ggplot2)
+
+# Selecting the variables of interest
+variables_of_interest <- c("age_at_ff", "age_at_lf", "age_at_fm" ,"age_at_lm", "avg_participants",
+                            "milestones", "n_funding_rounds", "partners")
+
+# Subsetting the dataframe with the selected variables
+subset_df <- df[, variables_of_interest]
+
+# Melt the data into long format for box plot
+melted_df <- reshape2::melt(subset_df)
+
+# Create the box plot
+gg <- ggplot(melted_df, aes(x = variable, y = value)) +
+  geom_boxplot(fill = "skyblue", color = "black", outlier.color = "black") +
+  labs(title = "Box Plot of Selected Variables", x = "Variable", y = "Value") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none") +  # Remove legend
+  scale_y_continuous(labels = scales::comma)  # Add comma separator to y-axis labels if needed
+
+# Adjust the size of the plot
+options(repr.plot.width = 10, repr.plot.height = 8)  # Adjust width and height as needed
+
+# Display the plot
+print(gg)
+
+```
+```{r}
+
+library(ggplot2)
+
+# Create the box plot
+gg <- ggplot(df, aes(x = "", y = funding_total_usd)) +
+  geom_boxplot(fill = "skyblue", color = "black", outlier.color = "black") +
+  labs(title = "Box Plot of 'funding_total_usd'", x = "", y = "Funding Total (USD)") +
+  theme(axis.text.x = element_blank(),  # Remove x-axis labels
+        legend.position = "none") +     # Remove legend
+  scale_y_continuous(labels = scales::comma, limits = quantile(df$funding_total_usd, c(0.05, 0.95)))  # Adjust y-axis limits
+
+# Adjust the size of the plot
+options(repr.plot.width = 8, repr.plot.height = 6)  # Adjust width and height as needed
+
+# Display the plot
+print(gg)
+
+
+```
+5- Start ups map
+
+```{r}
+# Load necessary library
+library(leaflet)
+library(leaflet.providers)
+
+# Define custom icons for the markers
+customIcon <- makeIcon(
+  iconUrl = "https://leafletjs.com/examples/custom-icons/leaf-green.png", # URL to a custom icon image
+  iconWidth = 38, iconHeight = 38,
+  iconAnchorX = 22, iconAnchorY = 34,
+  shadowUrl = "https://leafletjs.com/examples/custom-icons/leaf-shadow.png", # URL to a custom shadow image
+  shadowWidth = 50, shadowHeight = 64,
+  shadowAnchorX = 4, shadowAnchorY = 62
+)
+
+# Create the leaflet map
+map <- leaflet(df) %>%
+  # Add GPS-like tile layer (e.g., from OpenStreetMap or another provider)
+  addProviderTiles(providers$OpenStreetMap.Mapnik) %>%
+  # Add markers with custom icons
+  addMarkers(~longitude, ~latitude, 
+             icon = customIcon, 
+             popup = ~paste("<strong>Name:</strong>", name, "<br><strong>Status:</strong>", status),
+             label = ~name) %>%
+  # Set the initial view to the geographical center of the data
+  setView(lng = mean(df$longitude, na.rm = TRUE), 
+          lat = mean(df$latitude, na.rm = TRUE), 
+          zoom = 10)
+
+# Display the map
+map
+```
+
+6- Scatter Matrix
+
+```{r}
+
+library(GGally)
+
+# Your variables of interest and including the target variable 'status'
+variables_of_interest <- c("age_at_ff", "age_at_lf", "age_at_fm", "age_at_lm", "avg_participants",
+                           "milestones", "n_funding_rounds", "partners", "funding_total_usd", "diff_fm", "diff_lm", "labels", "status")
+
+# Subsetting the data frame with the selected variables
+subset_df <- df[, variables_of_interest]
+
+# Create a scatter matrix
+ggpairs(subset_df, columns = 1:5, aes(color = status), title = "Scatter Matrix with Status as Color")
+
+
+```
+
+```{r}
+
+library(GGally)
+
+# Your variables of interest and including the target variable 'status'
+variables_of_interest <- c("age_at_ff", "age_at_lf", "age_at_fm", "age_at_lm", "avg_participants",
+                           "milestones", "n_funding_rounds", "partners", "funding_total_usd", "diff_fm", "diff_lm", "labels", "status")
+
+# Subsetting the data frame with the selected variables
+subset_df <- df[, variables_of_interest]
+
+# Create a scatter matrix
+ggpairs(subset_df, columns = 6:11, aes(color = status), title = "Scatter Matrix with Status as Color")
+```
+
+# **Initial feature selection and Standardization**
+
+- Intial feature selection
+
+```{r}
+dt<-df_encoded|> dplyr::select(-c("name","city","labels","fundingRounds", "closed_at" ))
+```
+
+
+- divide data into coded and uncoded
+
+```{r}
+ dt_without_encoded <-  dt|> dplyr::select(-starts_with("is_"), -starts_with("state_code_"), -starts_with("category_code_") , -starts_with("has_"))
+
+```
+
+```{r}
+dt_with_encoded <-  dt|> dplyr::select(starts_with("is_"), starts_with("state_code_"), starts_with("category_code_") , starts_with("has_"))
+```
+
+```{r}
+str(dt_without_encoded)
+```
+- Standardization
+
+```{r}
+numeric_cols <- dt_without_encoded |> dplyr::select(-status) |> names()
+dt_without_encoded[numeric_cols] <- scale(dt_without_encoded[numeric_cols])
+```
+
+
+```{r}
+dt_before_feature<- cbind(dt_without_encoded, dt_with_encoded)
+```
+
+# **features selection**
+**Step1**: Filter-based Feature Selection
+**Step2**: Dimentionality reduction
+**Step3**: Embedded feature selection
+**Step4**: Desicion tree classifier
+
+## Step1: Filter-based Feature Selection:
+
+now, we will select the variable that is most correlated with the target variable (Status) by using 
+
+For numerical variables:
+- Bi-serial correlation
+-ANOVA
+
+For categorical variables:
+- chi-square
+
+### 1- Numerical variables:
+
+#### - Bi-serial correlation
+```{r, warning=FALSE}
+library(ltm)
+# Load the polycor package
+library(polycor)
+
+# Exclude 'state_code' and 'category_code' from the predictor variables
+predictors <- df[, !names(df) %in% c("state_code", "category_code")]
+
+# Convert 'status' to a numeric variable (0 for one level and 1 for the other)
+numeric_status <- as.numeric(predictors$status) - 1  # Convert to 0-based index
+
+# Remove the 'status' variable from the predictors
+predictors <- predictors[, !names(predictors) %in% c("status")]
+
+# Calculate Pearson correlation between each predictor variable and numeric_status
+correlations <- sapply(predictors, function(x) cor(as.numeric(x), numeric_status))
+
+# Display the correlation coefficients
+#correlations
+
+
+# Select variables with correlation magnitude above a certain threshold (e.g., 0.1)
+selected_variables <- names(correlations[abs(correlations) > 0.1])
+
+# Display selected variables
+selected_variables
+
+```
+
+#### - ANOVA
+
+```{r}
+# Get the names of the numerical columns
+numeric_columns <- sapply(dt_before_feature, is.numeric)
+
+# Perform ANOVA for each numerical variable
+anova_results <- lapply(names(dt_before_feature)[numeric_columns], function(var) {
+  formula <- as.formula(paste(var, "~ status"))
+  aov_result <- aov(formula, data = dt_before_feature)
+  summary_aov <- summary(aov_result)
+  p_value <- summary_aov[[1]][["Pr(>F)"]][1]
+  return(p_value)
+})
+
+# Name the results for easier interpretation
+names(anova_results) <- names(dt_before_feature)[numeric_columns]
+
+significant_vars <- names(anova_results)[unlist(anova_results) < 0.05]
+print(significant_vars)
+```
+### 2- Categorical variables
+
+- chi-square
+
+```{r}
+categorical_variables <- c("state_code", "category_code")
+target_variable<- "status"
+
+significant_variables <- c()
+# Create a contingency table for each categorical variable and the target variable
+for (variable in categorical_variables) {
+  contingency_table <- table(df[[variable]], df[[target_variable]])
+  
+  # Perform chi-square test
+  chi_square_test <- chisq.test(contingency_table, simulate.p.value = TRUE)
+ 
+  # Print the results
+  cat("\nChi-square test for", variable, "vs.", target_variable, ":\n")
+  print(chi_square_test)
+  
+  if (chi_square_test$p.value < 0.05) {
+    significant_variables <- c(significant_variables, variable)
+  }
+}
+
+# Print significant variables
+print("Significant categorical variables:")
+print(significant_variables)
+
+```
+Therefore, both the "state_code" & "category_code" variables are significant for the prediction model.
+
+### 3- Combine the selected numerical and Categorical features into a data frame
+
+```{r}
+f1<- dt_before_feature |> dplyr::select(c(
+    "longitude" ,"latitude", "first_funding_at", "age_at_ff", "age_at_fm", "age_at_lm", "partners",
+    "n_funding_rounds", "funding_total_usd", "milestones", "avg_participants", "diff_fm",
+    "diff_lm", "is_CA", "is_MA", "is_otherstate", "is_enterprise", "is_top500", "state_code_CA",
+    "state_code_CT", "state_code_MA", "state_code_NC", "state_code_OH", "state_code_PA",
+    "category_code_cleantech", "category_code_enterprise", "category_code_hardware",
+    "category_code_other", "category_code_public_relations", "has_roundA", "has_roundB",
+    "has_roundC", "has_roundD", "has_multiple_rounds"
+  ))
+```
+
+
+```{r}
+f1_data<-cbind(f1, dt_before_feature$status)
+f1_data <- f1_data |> rename( "status" = "dt_before_feature$status") 
+str(f1_data)
+```
+
+### 4- Validation
+
+Cross_validation
+
+```{r, warning=FALSE}
+# Load necessary libraries
+library(caret)
+
+# Set the seed for reproducibility
+set.seed(123)
+
+# Split the data into training and test sets
+trainIndex <- createDataPartition(f1_data$status, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
+data_train <- f1_data[trainIndex, ]
+data_test <- f1_data[-trainIndex, ]
+
+# Define your training control for k-fold cross-validation
+ctrl <- trainControl(method = "cv",   # Cross-validation method
+                     number = 5)      # Number of folds
+
+# Define your model. Let's assume you're using logistic regression
+model <- train(status ~ .,                  
+               data = data_train,          # training data
+               method = "glm",            # Logistic regression
+               trControl = ctrl, family = binomial())          # Training control
+
+# Print the results
+summary(model)
+print(model)
+
+```
+Conclusion:
+- Accuracy of feature selection is 74.3% which is satisfying
+- "3 not defined because of singularities" explains that "diff_fm", "state_codeID" , "state_codeKY" address multicolinearity  problem that could be handled in the next step of Dimentionality reduction.
+
+## Step2: Dimentionality reduction
+
+### - PCA
+
+```{r}
+
+library(biotools)
+```
+
+#### 1- Selecting numerical variables
+```{r}
+f1_data_without_status <- f1_data |> dplyr::select (-status)
+```
+
+#### 2- Perform PCA
+```{r}
+pca_result <- prcomp(f1_data_without_status, center = TRUE, scale. = FALSE)
+```
+
+```{r}
+# Standard deviations of the principal components
+pca_result$sdev
+
+# Proportion of variance explained by each principal component
+prop_var <- pca_result$sdev^2 / sum(pca_result$sdev^2)
+
+# Cumulative proportion of variance explained
+cum_var <- cumsum(prop_var)
+
+# Print cumulative proportion of variance explained
+print(cum_var)
+
+# Print rotation matrix (loadings)
+pca_result$rotation
+
+# Print scores (transformed data)
+pca_scores <- pca_result$xs
+```
+#### 3- Visulaizing
+```{r}
+# Biplot
+biplot(pca_result)
+
+# Scree plot
+plot(prop_var, type = "b", xlab = "Principal Component", ylab = "Proportion of Variance Explained")
+```
+```{r}
+# Cumulative proportion of variance explained
+cum_var <- cumsum(prop_var)
+
+# Plot cumulative proportion of variance explained
+plot(cum_var, type = "b", xlab = "Number of Principal Components", ylab = "Cumulative Proportion of Variance Explained", main = "Cumulative Variance Explained")
+
+```
+#### 4- Validation
+
+Choosing the PCAs with the most explained variation
+```{r}
+# Eigenvalues
+eigenvalues <- pca_result$sdev^2
+
+# Components with eigenvalues > 1
+num_components_kaiser <- sum(eigenvalues > 1)
+num_components_kaiser
+```
+The Kaiser Criterion suggests keeping 5 components with eigenvalues (variance explained) greater than 1
+
+#### 5- Extract the scores of the first 5 principal components
+```{r}
+pca_scores <- as.data.frame(pca_result$x[, 1:5])
+```
+
+```{r}
+loadings <- pca_result$rotation[, 1:5]
+
+# loadings now contains the contributions of each original feature to the first 5 principal components
+print(loadings)
+```
+#### 6- Create pca_data to contain the selected PCAs
+```{r}
+
+# Convert f1_data to a numeric matrix
+f1_data_matrix <- as.matrix(f1_data_without_status)
+
+# Perform matrix multiplication with loadings
+pca_data <- f1_data_matrix %*% loadings
+
+# Now pca_data contains the transformed data using principal components
+
+```
+
+```{r}
+f2_data<- as.data.frame(cbind(pca_data, f1_data$status))
+f2_data <- f2_data |> rename( "status" = "V6") 
+```
+
+```{r}
+str(f2_data)
+```
+
+
+
+## Step3: Embeded Feature selection: LASSO 
+
+
+### - LASSO
+
+#### 1- Perform the Model
+
+
+- **Select variables**
+```{r}
+str(f1_data)
+```
+
+```{r}
+
+# Select categorical variables
+categorical_vars <- c("state_code", "category_code")
+
+# Encode categorical variables
+encoded_categorical <- model.matrix(~ . - 1, data = f2_data)
+
+# Combine PCA-transformed data with encoded categorical variables
+x1 <- cbind(pca_data, encoded_categorical)
+
+# Define response variable
+y1 <- as.factor(factor(f1_data$status, levels = c("closed", "acquired"), labels = c(0, 1)))
+```
+
+```{r}
+str(as.data.frame(cbind(x1,y1)))
+```
+
+```{r}
+# Convert the status variable to 0 and 1
+f2_data <- f1_data %>%
+  mutate(status = ifelse(status == "acquired", 1, 0))
+
+# Combine the factors with pca_data
+f2_data <- as.data.frame(cbind(pca_data, state_code = f1_data$state_code, 
+                       category_code = f1_data$category_code,
+                       status = f1_data$status))
+
+
+
+# Check the structure of the combined dataframe
+str(f2_data)
+
+```
+ - **Model**
+```{r}
+# Set seed for reproducibility
+set.seed(123)
+
+# Divide the data into training and testing sets
+train_indices <- sample(1:nrow(f2_data), 0.8 * nrow(f2_data))  # 80% for training
+train_data <- f2_data[train_indices, ]
+test_data <- f2_data[-train_indices, ]
+
+# Prepare predictors (X) and response (y) for training and testing sets
+X_train <- as.matrix(train_data[, -which(names(train_data) %in% c("status"))])  # Exclude status column
+y_train <- train_data$status - 1  # Convert status to 0s and 1s
+
+X_test <- as.matrix(test_data[, -which(names(test_data) %in% c("status"))])  # Exclude status column
+y_test <- test_data$status - 1  # Convert status to 0s and 1s
+
+# Perform LASSO regression with cross-validation
+lasso_model <- cv.glmnet(X_train, y_train, family = "binomial", alpha = 1)
+
+# Print the optimal lambda value selected by cross-validation
+print(lasso_model$lambda.min)
+
+# Plot the cross-validation curve
+plot(lasso_model)
+
+```
+#### 2- **features extraction**
+
+```{r}
+# Extract coefficients
+coefficients <- as.matrix(coef(lasso_model, s = "lambda.min"))
+
+# Check the values of coefficients != 0
+non_zero_indices <- which(coefficients != 0)
+
+# Extract variable names based on non-zero indices
+non_zero_variables <- rownames(coefficients)[non_zero_indices]
+non_zero_variables
+```
+Therefore, the features selected from the LASSO regression are 
+PC1
+PC2
+PC3
+PC5
+
+
+
+#### 3- Model validation
+
+```{r}
+# Predict probabilities for the test set
+pred_prob <- predict(lasso_model, newx = X_test, s = "lambda.min", type = "response")
+
+# Convert probabilities to class predictions (0 or 1)
+pred_class <- ifelse(pred_prob > 0.5, 1, 0)
+
+# Compute accuracy
+accuracy <- sum(pred_class == y_test) / length(y_test)
+cat("Accuracy:", accuracy, "\n")
+
+# Compute precision
+precision <- sum(pred_class == 1 & y_test == 1) / sum(pred_class == 1)
+cat("Precision:", precision, "\n")
+
+# Compute recall
+recall <- sum(pred_class == 1 & y_test == 1) / sum(y_test == 1)
+cat("Recall:", recall, "\n")
+
+# Compute F1-score
+f1_score <- 2 * (precision * recall) / (precision + recall)
+cat("F1-score:", f1_score, "\n")
+
+# Compute AUC
+library(pROC)
+roc_obj <- roc(y_test, pred_prob)
+auc <- auc(roc_obj)
+cat("AUC:", auc, "\n")
+
+# Plot ROC curve
+plot(roc_obj, main = "ROC Curve", col = "blue", lwd = 2)
+
+```
+
+
+## Step4: Desicion tree classifier
+
+```{r}
+
+library(rpart)
+
+# Splitting data into training and testing sets
+set.seed(123) # for reproducibility
+train_index <- sample(1:nrow(f1_data), 0.7*nrow(f1_data))
+train_data <- f1_data[train_index, ]
+test_data <- f1_data[-train_index, ]
+
+# Building the decision tree model
+tree_model <- rpart(status ~ ., data = train_data, method = "class")
+
+# Print summary of the tree
+summary(tree_model)
+
+# Extracting selected features
+selected_features <- colnames(train_data)[which(names(tree_model$frame) != "yval")]
+
+# Print selected features
+print(selected_features)
+
+# Making predictions on the test data
+predictions <- predict(tree_model, test_data, type = "class")
+
+# Evaluating the model
+confusion_matrix <- table(predictions, test_data$status)
+accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+print(confusion_matrix)
+cat("Accuracy:", accuracy)
+
+```
+
+```{r, warning=FALSE}
+library(rpart.plot)
+printcp(tree_model)
+options(repr.plot.width = 30, repr.plot.height = 20)
+rpart.plot(tree_model, yesno = T, cex=0.5)
+```
+```{r}
+plotcp(tree_model, upper = "splits")
+```
+Variables importance
+```{r}
+tree_model$variable.importance |> 
+  data.frame() |> rownames_to_column(var = "Feature") %>%
+  dplyr :: rename(Overall = "tree_model.variable.importance") |> ggplot(aes(x = fct_reorder(Feature, Overall), y = Overall)) +
+  geom_pointrange(aes(ymin = 0, ymax = Overall)) + theme_minimal() + coord_flip()
+```
+
+**Features selected from D.tree classifier**
+
+```{r}
+dsc_features <- f1_data |> dplyr::select(c("latitude", "longitude","first_funding_at", "age_at_ff" , "age_at_fm", "partners" , "n_funding_rounds" , "funding_total_usd", "milestones" )  )
+```
+
+**D.tree data**
+```{r}
+dsc_data <- cbind(dsc_features, f1_data$status)
+dsc_data <- dsc_data |> rename( "status" = "f1_data$status") 
+str(dsc_data)
+```
+
+
+# Data splitting
+## Train- Test Data split
+
+- Using Stratified k-folds
+
+```{r}
+# Load necessary library
+library(caret)
+
+# Define the number of folds
+num_folds <- 5
+
+# Perform stratified K-fold cross-validation
+folds <- createFolds(dsc_data$status, k = num_folds, list = TRUE, returnTrain = FALSE)
+
+# Initialize a list to store results
+results <- list()
+
+# Iterate through each fold
+for (i in seq_along(folds)) {
+  # Get the indices of the test set for the current fold
+  test_indices <- unlist(folds[i])
+  
+  # Create the training and testing sets for the current fold
+  train_data <- dsc_data[-test_indices, ]
+  test_data <- dsc_data[test_indices, ]
+  
+  # Perform some analysis/training with train_data
+  # (e.g., train a model and evaluate it on test_data)
+  
+  # Store the test_data or the results of the evaluation
+  results[[i]] <- list(train_data = train_data, test_data = test_data)
+  
+  # Optionally, print or log the size of train and test sets
+  cat("Fold", i, ": Train set size =", nrow(train_data), ", Test set size =", nrow(test_data), "\n")
+}
+
+# Optionally, combine all test_data for further analysis
+all_test_data <- do.call(rbind, lapply(results, function(x) x$test_data))
+cat("Total test set size after combining all folds =", nrow(all_test_data), "\n")
+
+```
+```{r}
+cv_data<- rbind(train_data, test_data)
+str(cv_data)
+```
+# **D.tree classifier Models**
+## **Decision Tree**
+
+```{r, warning=FALSE}
+library(DAAG)
+library(party)
+library(rpart)
+library(rpart.plot)
+library(mlbench)
+library(caret)
+library(pROC)
+library(tree)
+```
+
+#### Model
+
+```{r}
+set.seed(12)
+Ds_Model <- train_data |> rpart(status ~., data = _, method = "class")
+
+```
+
+#### Visualizing the results
+```{r}
+printcp(Ds_Model)
+options(repr.plot.width = 30, repr.plot.height = 20)
+rpart.plot(Ds_Model, yesno = T, cex=0.5)
+```
+
+```{r}
+plotcp(Ds_Model, upper = "splits")
+```
+
+
+```{r}
+Ds_Model$variable.importance |> 
+  data.frame() |> rownames_to_column(var = "Feature") %>%
+  dplyr :: rename(Overall = 'Ds_Model.variable.importance') |> ggplot(aes(x = fct_reorder(Feature, Overall), y = Overall)) +
+  geom_pointrange(aes(ymin = 0, ymax = Overall)) + theme_minimal() + coord_flip()
+```
+#### Evaluation
+
+
+```{r}
+library(caret)
+library(ggplot2)
+library(gridExtra)
+
+DSC_Model_p <- predict(Ds_Model, newdata=cv_data, type= "class" )
+cm1<- confusionMatrix(cv_data$status, reference = DSC_Model_p)
+
+cm1
+```
+**Interpretation:**
+- The model has an overall accuracy of 82.43%, significantly better than random guessing.
+- High sensitivity and specificity suggest the model is effective at identifying both "acquired" and "closed" startups.
+- High positive predictive value for "acquired" but lower negative predictive value for "closed."
+- Moderate agreement between the model's predictions and actual outcomes as indicated by the Kappa statistic.
+
+
+```{r}
+# ROC curve
+pred_probs <- predict(Ds_Model, newdata = test_data, type = "prob")[,2] 
+roc_data <- roc(test_data$status, pred_probs)
+
+# Plot the ROC curve
+plot(roc_data,
+     print.auc = TRUE,
+     auc.polygon = TRUE,
+     grid = c(0.1, 0.2),
+     grid.col = c("green", "red"),
+     max.auc.polygon = TRUE,
+     auc.polygon.col = "lightblue",
+     print.thres = TRUE,
+     main = 'ROC Curve')
+```
+
+```{r}
+str(train_data)
+```
+
+##** Logistic reg**
+```{r}
+
+Log_Model <- glm(status ~ ., 
+             data = train_data, 
+             family = binomial)
+
+# View the summary of the model
+summary(Log_Model)
+```
+These predictors significantly contribute to the prediction of the status.
+The coefficients for these significant predictors indicate the direction and magnitude of their effect on the log-odds of the status being 1.
+The predictors with non-significant p-values do not contribute significantly to the model according to this analysis.
+
+#### Evaluation
+
+
+```{r}
+cv_data$predicted_prob <- predict(Log_Model, newdata = cv_data, type = "response")
+
+cv_data$predicted_class <- ifelse(cv_data$predicted_prob > 0.5, "acquired", "closed")
+
+cv_data$predicted_class <- factor(cv_data$predicted_class, levels = levels(cv_data$status))
+
+cm_2 <- confusionMatrix(cv_data$predicted_class, cv_data$status)
+
+print(cm_2)
+```
+
+**Interpretation**
+
+Confusion Matrix:
+
+- Out of 67 instances where the actual status was "acquired", the model correctly predicted 67, but incorrectly predicted 166 as "closed".
+Out of 632 instances where the actual status was "closed", the model correctly predicted 131, but incorrectly predicted 501 as "acquired".
+Accuracy:
+
+- The overall accuracy of the model is very low at 0.2289, indicating that it correctly predicts the class of the target variable in only about 22.89% of the cases.
+
+Sensitivity:
+
+- Sensitivity, also known as the true positive rate, measures the proportion of actual positive cases that were correctly identified by the model. Here, it's very low at 0.11796.
+
+Specificity:
+
+- Specificity measures the proportion of actual negative cases that were correctly identified by the model. Here, it's also low at 0.44108.
+
+```{r}
+roc_data_log <- roc(cv_data$status, cv_data$predicted_prob)
+
+# Plot the ROC curve
+plot(roc_data_log,
+     print.auc = TRUE,
+     auc.polygon = TRUE,
+     grid = c(0.1, 0.2),
+     grid.col = c("green", "red"),
+     max.auc.polygon = TRUE,
+     auc.polygon.col = "lightblue",
+     print.thres = TRUE,
+     main = 'ROC Curve')
+```
+
+## **Support vector machine**
+
+#### Model
+```{r, warning=FALSE}
+
+library(e1071)
+library(caret)
+library(dplyr)
+
+# Train the SVM model again if necessary
+svm_model <- svm(status ~ ., data = train_data, type = "C-classification", kernel = "linear", cost = 1)
+
+
+```
+
+
+#### Visualization
+
+```{r}
+# Example of converting factors to numeric if necessary
+train_data$partners <- as.numeric(as.factor(train_data$partners))
+
+# Train the SVM model again
+svm_model_vs <- svm(status ~ partners + age_at_fm, data = train_data, type = "C-classification", kernel = "linear", cost = 1)
+
+# Plot the decision boundary
+plot(svm_model, train_data, partners ~ age_at_fm)
+```
+#### Evaluation
+```{r}
+train_data|>names()
+```
+
+**Confusion matrix**
+
+```{r}
+
+# Make predictions on the test data
+svm_pred <- predict(svm_model, newdata = cv_data)
+
+# Assuming test_data has the actual labels in a column named 'status'
+# Create the confusion matrix
+cm3 <- confusionMatrix(svm_pred, cv_data$status)
+
+# Print the confusion matrix
+print(cm3)
+```
+**Interpretation**
+
+Confusion Matrix:
+
+- Out of 470 instances where the actual status was "acquired", the model correctly predicted 383, and incorrectly predicted 87 as "closed".
+- Out of 395 instances where the actual status was "closed", the model correctly predicted 210, and incorrectly predicted 185 as "acquired".
+
+Accuracy:
+
+- The overall accuracy of the model is 0.6855, indicating that it correctly predicts the class of the target variable in about 68.55% of the cases.
+
+Sensitivity:
+
+- Sensitivity, also known as the true positive rate, measures the proportion of actual positive cases that were correctly identified by the model. Here, it is 0.6743.
+
+Specificity:
+
+- Specificity measures the proportion of actual negative cases that were correctly identified by the model. Here, it is 0.7071.
+
+
+# Models Comparison
+
+- Evaluation functions
+```{r}
+plot_confusion_matrix <- function(cm, title) {
+  df <- as.data.frame(cm$table)
+  df$Reference <- factor(df$Reference, levels = rev(levels(df$Reference)))
+  ggplot(df, aes(x = Prediction, y = Reference)) +
+    geom_tile(aes(fill = Freq), color = "white") +
+    scale_fill_gradient(low = "white", high = "steelblue") +
+    geom_text(aes(label = Freq), vjust = 1) +
+    theme_minimal() +
+    labs(title = title, fill = "Count")
+}
+```
+
+```{r}
+conclusion <- function(cm, model_name) {
+  accuracy <- cm$overall["Accuracy"]
+  sensitivity <- cm$byClass["Sensitivity"]
+  specificity <- cm$byClass["Specificity"]
+  precision <- cm$byClass["Pos Pred Value"]
+  f1_score <- 2 * (precision * sensitivity) / (precision + sensitivity)
+  
+  cat(model_name, "\n",
+      "Accuracy:", round(accuracy, 2), "\n",
+      "Sensitivity:", round(sensitivity, 2), "\n",
+      "Specificity:", round(specificity, 2), "\n",
+      "Precision:", round(precision, 2), "\n",
+      "F1-Score:", round(f1_score, 2), "\n\n")
+}
+
+```
+
+- Confusion Matrices
+
+```{r}
+library(gridExtra)
+# Plot confusion matrices side by side
+p1 <- plot_confusion_matrix(cm1, "Decision Tree")
+p2 <- plot_confusion_matrix(cm_2, "Logistic Regression")
+p3 <- plot_confusion_matrix(cm3, "Support Vector Machine")
+
+grid.arrange(p1, p2, p3, ncol = 3)
+
+
+```
+- Performance comparison
+
+```{r}
+conclusion(cm1, "Decision Tree Model")
+conclusion(cm_2, "Logistic Model")
+conclusion(cm3, "Support vector machine Model")
+```
+# Best Model Selection:
+
+Based on the evaluation metrics, the Decision Tree Model emerged as the best-performing model. It achieved the highest accuracy (0.81) and F1-score (0.87), indicating it has a strong balance between precision (0.93) and recall (sensitivity, 0.81). The Decision Tree Model also demonstrated superior specificity (0.82), making it reliable in correctly identifying non-successful startups.
+
+## Reason for Selection:
+The Decision Tree Model is chosen as the best model due to the following reasons:
+
+- High Accuracy and F1-Score: It correctly predicts startup success with a high degree of accuracy and balances precision and recall effectively.
+- High Precision: It shows excellent precision (0.93), meaning it is highly reliable when it predicts a startup to be successful.
+- Balanced Sensitivity and Specificity: The model maintains a good balance between sensitivity (0.81) and specificity (0.82), ensuring that it is capable of identifying both successful and unsuccessful startups accurately.
+
+## Actionable Insights for Stakeholders:
+
+- Investors: The Decision Tree Model can be used to identify potential successful startups based on historical data, aiding in investment decisions.
+- Startup Founders: Understanding the factors considered by the Decision Tree Model can help founders focus on key areas that influence success.
+- Policy Makers and Incubators: The model provides a basis for designing support programs that enhance the factors leading to startup success.
+
+# Conclusion
+In conclusion, the Decision Tree Model stands out as the most effective model for predicting startup success in this study. It not only provides high accuracy and reliability but also offers valuable insights that can be leveraged by various stakeholders in the startup ecosystem to make informed decisions regarding investments and strategic initiatives. The Logistic Regression Model underperformed, highlighting the complexity and non-linear nature of the data, which the Decision Tree Model and SVM managed to capture better, with the Decision Tree Model having a slight edge in overall performance metrics.
