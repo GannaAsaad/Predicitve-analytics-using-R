@@ -1,9 +1,9 @@
-📈 Predictive Analytics Using R
+📈 Predictive Analytics Using R -> Startups Success Prediction Using R Programming Language.
 
 <img width="640" height="427" alt="image" src="https://github.com/user-attachments/assets/239991f5-91cc-4e85-9bd8-3d5640a43028" />
 
 
-Startups Success Prediction Using R Programming Language.
+
 
 This project demonstrates predictive analytics workflows in R by building models to predict startup success using real datasets and statistical machine learning techniques.
 
